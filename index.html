@@ -1,12 +1,21 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Nourish</title>
+<meta name="description" content="Food, without the noise.">
+<meta name="theme-color" content="#13161E">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Nourish">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;overflow:hidden}
+html,body{height:100%;overflow:hidden;-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:manipulation}
 :root{
   --bg:#13161E;--surface:#1C2030;--card:#242838;--border:#323850;
   --green:#4DD871;--gd:#277A3C;--gl:#172B1E;--gt:#AEFFC8;
@@ -60,7 +69,7 @@ body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);disp
 .chip.sel{border-color:var(--green);background:var(--gl);color:var(--gt)}
 
 /* ── Inputs ── */
-.inp{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:13px;font-family:'Nunito',sans-serif;font-size:14px;color:var(--text);background:var(--card);outline:none;transition:border-color .2s}
+.inp{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:13px;font-family:'Nunito',sans-serif;font-size:16px;color:var(--text);background:var(--card);outline:none;transition:border-color .2s}
 .inp:focus{border-color:var(--green)}
 .lbl{font-size:12px;font-weight:800;color:var(--soft);margin-bottom:6px;display:block;text-transform:uppercase;letter-spacing:.06em}
 .ig{margin-bottom:14px}
@@ -1338,7 +1347,7 @@ function rAmtModal(){
     <div class="ig"><label class="lbl">How much?</label>
       <div style="display:flex;gap:8px">
         <input class="inp" type="number" value="${amt}" min="1" style="flex:1" oninput="ST.add.amt=this.value">
-        <select style="padding:10px;border:1.5px solid var(--border);border-radius:12px;font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;background:var(--card);color:var(--text);outline:none;cursor:pointer" onchange="ST.add.unit=this.value">
+        <select style="padding:10px;border:1.5px solid var(--border);border-radius:12px;font-family:'Nunito',sans-serif;font-size:16px;font-weight:700;background:var(--card);color:var(--text);outline:none;cursor:pointer" onchange="ST.add.unit=this.value">
           <option value="g" ${unit==='g'?'selected':''}>g</option>
           <option value="ml" ${unit==='ml'?'selected':''}>ml</option>
           <option value="oz" ${unit==='oz'?'selected':''}>oz</option>
@@ -1726,4 +1735,7 @@ function render(){
 supa.auth.onAuthStateChange(async(event,session)=>{
   if(event==='SIGNED_OUT'){authUser=null;showNums=false;LOCK.loaded=false;ST.meals=[];ST.moods=[];ST.nourished=[];CF=[];RCP=[];appLoading=false;render();}
 });
+if('serviceWorker' in navigator&&location.protocol.startsWith('http')){
+  window.addEventListener('load',()=>{navigator.serviceWorker.register('/sw.js').catch(()=>{});});
+}
 </script></body></html>
