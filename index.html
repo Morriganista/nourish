@@ -20,7 +20,7 @@ body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);disp
 
 /* ── Nav bar ── */
 #nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-around;padding:10px 8px 24px;z-index:100;backdrop-filter:blur(12px)}
-.nb{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;cursor:pointer;font-family:'Nunito',sans-serif;font-size:10px;font-weight:800;padding:4px 16px;border-radius:12px;color:var(--soft);transition:color .18s}
+.nb{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;cursor:pointer;font-family:'Nunito',sans-serif;font-size:10px;font-weight:800;padding:4px 10px;border-radius:12px;color:var(--soft);transition:color .18s;flex:1}
 .nb.on{color:var(--green)}
 .fab{width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#277A3C,#1E5C2C);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:-20px;color:var(--gt);box-shadow:0 4px 16px rgba(77,216,113,.25)}
 .fab:active{transform:scale(.93)}
@@ -400,9 +400,57 @@ const AFFS=['Every meal is a gift to your body.','Nourishment looks different ev
 let CF=[];
 let jFilter={type:'all',value:null};
 let RCP=[];
-let showNums=false;try{const s=localStorage.getItem('n_shownums');if(s!==null)showNums=s==='1';}catch(e){}
-const clinicalMode=new URLSearchParams(window.location.search).get('view')==='clinical';
-function toggleNums(){showNums=!showNums;try{localStorage.setItem('n_shownums',showNums?'1':'0');}catch(e){}render();}
+/* ── NUMBERS LOCK (safe word + 2-hour wait, stored per account, checked on the server) ── */
+let showNums=false; // always follows the account's lock state; off whenever the state is unknown
+let LOCK={loaded:false,has:false,on:false,unlockAt:null,resetAt:null,serverNow:0,fetchedAt:0};
+let lockUi={open:false,word:'',word2:'',err:'',busy:false};
+function applyLock(d){
+  if(!d)return;
+  LOCK={loaded:true,has:!!d.has_safe_word,on:!!d.numbers_on,unlockAt:d.unlock_at?new Date(d.unlock_at).getTime():null,resetAt:d.reset_at?new Date(d.reset_at).getTime():null,serverNow:new Date(d.server_now).getTime(),fetchedAt:Date.now()};
+  showNums=LOCK.on;
+}
+async function loadLock(){
+  try{const{data,error}=await supa.rpc('lock_status');if(error)throw error;applyLock(data);}
+  catch(e){LOCK.loaded=false;showNums=false;}
+}
+function lockNow(){return LOCK.serverNow+(Date.now()-LOCK.fetchedAt);}
+function lockRemainingMs(){return LOCK.unlockAt==null?null:LOCK.unlockAt-lockNow();}
+function resetRemainingMs(){return LOCK.resetAt==null?null:LOCK.resetAt-lockNow();}
+function lockMsg(e){
+  const m=((e&&e.message)||'').toLowerCase();
+  if(m.includes('wrong safe word'))return "That isn't your safe word.";
+  if(m.includes('too short'))return 'Please use at least 4 characters.';
+  if(m.includes('already set'))return 'A safe word is already set for this account.';
+  if(m.includes('reset not ready'))return 'The waiting time is not over yet.';
+  return 'Something went wrong. Numbers stay as they are. Please try again.';
+}
+async function lockCall(fn,args,after){
+  lockUi.busy=true;lockUi.err='';render();
+  try{const{data,error}=await supa.rpc(fn,args);if(error)throw error;if(data&&data.server_now)applyLock(data);else await loadLock();if(after)after();}
+  catch(e){lockUi.err=lockMsg(e);}
+  lockUi.busy=false;render();
+}
+function saveSafeWord(){
+  const a=lockUi.word.trim(),b=lockUi.word2.trim();
+  if(a.length<4){lockUi.err='Please use at least 4 characters.';render();return;}
+  if(a!==b){lockUi.err="The two words don't match.";render();return;}
+  lockCall('set_safe_word',{p_word:a},()=>{lockUi.word='';lockUi.word2='';});
+}
+function requestUnlock(){const w=lockUi.word;lockCall('request_numbers_unlock',{p_word:w},()=>{lockUi.word='';lockUi.open=false;});}
+function startReset(){lockCall('request_safe_word_reset',{},()=>{lockUi.open=false;lockUi.word='';});}
+function cancelReset(){lockCall('cancel_safe_word_reset',{});}
+function finishReset(){
+  const a=lockUi.word.trim(),b=lockUi.word2.trim();
+  if(a.length<4){lockUi.err='Please use at least 4 characters.';render();return;}
+  if(a!==b){lockUi.err="The two words don't match.";render();return;}
+  lockCall('finish_safe_word_reset',{p_word:a},()=>{lockUi.word='';lockUi.word2='';lockUi.err='';});
+}
+function cancelUnlock(){lockCall('cancel_numbers_unlock',{});}
+function confirmNumbersOn(){lockCall('confirm_numbers_on',{});}
+function turnNumbersOff(){lockCall('numbers_off',{});}
+function toggleNums(){if(showNums)turnNumbersOff();else nav('settings');} // the home button never turns numbers on directly
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&typeof authUser!=='undefined'&&authUser){loadLock().then(()=>render());}});
+setInterval(()=>{if(typeof authUser!=='undefined'&&authUser&&ST.scr==='settings'&&(LOCK.unlockAt!=null||LOCK.resetAt!=null)&&!LOCK.on&&!lockUi.busy&&!document.hidden){render();}},30000);
 
 // ── Supabase ──
 const SUPA_URL='https://owdtqmrugopixkvfemfe.supabase.co';
@@ -441,6 +489,7 @@ async function register(name,username,password){
 async function afterSignIn(user){
   const{data:profile}=await supa.from('profiles').select('*').eq('id',user.id).single();
   authUser={id:user.id,name:profile?.name||'',username:profile?.username||''};
+  await loadLock();
   await loadUserData();
   render();
 }
@@ -450,6 +499,7 @@ async function logout(){
   authUser=null;authScreen='login';authErr=null;
   ST.meals=[];ST.moods=[];ST.nourished=[];CF=[];RCP=[];
   onboarded=false;
+  LOCK={loaded:false,has:false,on:false,unlockAt:null,resetAt:null,serverNow:0,fetchedAt:0};showNums=false;
   render();
 }
 
@@ -515,7 +565,7 @@ function todayMood(){const t=ST.moods.filter(m=>m.date===today());return t.lengt
 function todayNourished(){const t=ST.nourished.filter(n=>n.date===today());return t.length?t[t.length-1]:null;}
 function calcN(meal){return meal.ings.reduce((a,i)=>{const f=i.factor;return{en:a.en+i.food.p100.en*f,pr:a.pr+i.food.p100.pr*f,ca:a.ca+i.food.p100.ca*f,fa:a.fa+i.food.p100.fa*f,fi:a.fi+i.food.p100.fi*f}},{en:0,pr:0,ca:0,fa:0,fi:0});}
 function totalN(ms){return ms.reduce((a,m)=>{const n=calcN(m);return{en:a.en+n.en,pr:a.pr+n.pr,ca:a.ca+n.ca,fa:a.fa+n.fa,fi:a.fi+n.fi}},{en:0,pr:0,ca:0,fa:0,fi:0});}
-function saveAll(){try{localStorage.setItem('n_shownums',showNums?'1':'0');}catch(e){}} // only persist display pref locally now
+function saveAll(){} // nothing is stored locally any more; the numbers setting lives on the account
 
 function setMood(v){
   const d=today();
@@ -570,7 +620,7 @@ function getVariety(meals){
     if(p.fa>10)v.fat=true;
   }}return v;
 }
-const VGROUPS=[{k:'protein',label:'Protein',col:'#378ADD'},{k:'grains',label:'Grains',col:'#EF9F27'},{k:'veg',label:'Veg',col:'#5EBF6E'},{k:'fruit',label:'Fruit',col:'#D4537E'},{k:'dairy',label:'Dairy',col:'#AFA9EC'},{k:'fat',label:'Good fats',col:'#F0997B'}];
+const VGROUPS=[{k:'protein',label:'Protein',col:'#378ADD'},{k:'grains',label:'Grains',col:'#EF9F27'},{k:'veg',label:'Veg',col:'#5EBF6E'},{k:'fruit',label:'Fruit',col:'#D4537E'},{k:'dairy',label:'Dairy',col:'#AFA9EC'},{k:'fat',label:'Fats',col:'#F0997B'}];
 
 function varietyRing(meals,sz=80){
   const logged=MT.filter(t=>meals.some(m=>m.type===t.id));
@@ -722,15 +772,15 @@ async function handleBarcode(code){
         p100:{en:Math.round(n['energy-kcal_100g']||(n['energy_100g']||0)/4.184||0),
           pr:round(n['proteins_100g']||0),ca:round(n['carbohydrates_100g']||0),
           fa:round(n['fat_100g']||0),fi:round(n['fiber_100g']||0)}};
-      ST.fmap[fid]=food;ST.scan.result={found:true,food};
+      const hasNutrition=Object.values(food.p100).some(v=>v>0);
+      if(!hasNutrition){ST.scan.result={found:false,noNutrition:true,code,name:p.product_name||''};}
+      else{ST.fmap[fid]=food;ST.scan.result={found:true,food};}
     }else{ST.scan.result={found:false,code};}
   }catch(e){ST.scan.result={error:true,code};}
   render();
 }
 
 /* ── ACTIONS ── */
-function setMood(v){const d=today();const i=ST.moods.findIndex(m=>m.date===d);const mood={date:d,value:v};if(i>=0)ST.moods[i]=mood;else ST.moods.push(mood);saveAll();render();setTimeout(()=>fireMoodEffect(v),80);}
-
 const NOURISHED=[
   {v:1,l:'Not at all',c:'#8A9AB5'},
   {v:2,l:'A little',c:'#5B9FE0'},
@@ -738,8 +788,6 @@ const NOURISHED=[
   {v:4,l:'Well',c:'#4DD871'},
   {v:5,l:'Very well',c:'#FFD166'},
 ];
-
-function setNourished(v){const d=today();const i=ST.nourished.findIndex(n=>n.date===d);const entry={date:d,value:v};if(i>=0)ST.nourished[i]=entry;else ST.nourished.push(entry);saveAll();render();}
 
 function broccoliSvg(v,col,sz=28){
   return`<svg width="${sz}" height="${sz}" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -823,7 +871,7 @@ function saveMeal(){
   if(authUser)syncMeal(meal);
 }
 
-function addScanned(){const food=ST.scan.result.food;if(!food)return;ST.add.ings.push({id:Date.now(),food,factor:1,da:'100',du:'g'});ST.scan.result=null;nav('add');}
+function addScanned(){const food=ST.scan.result&&ST.scan.result.food;if(!food)return;ST.scan.result=null;nav('add');ST.add.modal=true;ST.add.selFood=food;ST.modal='amount';ST.add.amt='100';ST.add.unit='g';ST.add.portionMode='rough';render();}
 
 function delMeal(id){
   ST.meals=ST.meals.filter(m=>m.id!==id);
@@ -843,6 +891,9 @@ function saveCustom(){
   if(authUser)syncCustomFood(food);
 }
 
+function createFromScan(){const nm=(ST.scan.result&&ST.scan.result.name)||'';ST.scan.result=null;nav('add');openCreate();ST.cr.name=nm;render();}
+function openCreate(){ST.modal='create';ST.cr={name:'',en:'',pr:'',ca:'',fa:'',fi:'',err:null};render();setTimeout(()=>{const i=$('cfn');if(i)i.focus();},60);}
+function backToSearch(){ST.modal='search';render();setTimeout(()=>{const i=$('sfq');if(i)i.focus();},60);}
 function delCustom(id){
   CF=CF.filter(f=>f.id!==id);delete ST.fmap[id];
   toast('Food removed');render();
@@ -852,8 +903,8 @@ function delCustom(id){
 /* ── ROUGH PORTIONS ── */
 const PORTIONS=[
   {label:'A bite',sub:'just a little',g:25,icon:'👆'},
-  {label:'A teaspoon',sub:'~5g',g:5,icon:'🥄'},
-  {label:'A tablespoon',sub:'~15g',g:15,icon:'🫙'},
+  {label:'A teaspoon',sub:'a small spoon',g:5,icon:'🥄'},
+  {label:'A tablespoon',sub:'a big spoon',g:15,icon:'🫙'},
   {label:'A handful',sub:'loosely cupped',g:35,icon:'✋'},
   {label:'A small portion',sub:'side dish size',g:80,icon:'🤏'},
   {label:'A medium portion',sub:'main serve',g:150,icon:'🍽️'},
@@ -957,6 +1008,23 @@ function rRegister(){
   </div>`;
 }
 
+function rSafeWord(){
+  return`<div class="screen" style="display:flex;flex-direction:column;align-items:center;text-align:center;padding-top:48px">
+    ${rLogo(56)}
+    <div style="font-size:22px;font-weight:900;margin-bottom:8px">Choose a safe word</div>
+    <div style="font-size:14px;color:var(--soft);line-height:1.8;margin-bottom:24px;max-width:300px">
+      Numbers like calories stay hidden in Nourish. If you ever want to see them, you'll need this word, and then wait 2 hours. That gives a hard moment time to pass.<br><br>
+      Pick something you'll remember. It can't be looked up later.
+    </div>
+    ${lockUi.err?`<div class="err-box" style="width:100%;max-width:320px">${lockUi.err}</div>`:''}
+    <div style="width:100%;max-width:320px;text-align:left">
+      <div class="ig"><label class="lbl">Safe word</label><input class="inp" type="password" autocomplete="off" value="${lockUi.word.replace(/"/g,'&quot;')}" oninput="lockUi.word=this.value"></div>
+      <div class="ig"><label class="lbl">Once more</label><input class="inp" type="password" autocomplete="off" value="${lockUi.word2.replace(/"/g,'&quot;')}" oninput="lockUi.word2=this.value"></div>
+      <button class="btn btn-g" style="width:100%" ${lockUi.busy?'disabled':''} onclick="saveSafeWord()"><span>${ico('check',16)}</span>Save my safe word</button>
+    </div>
+  </div>`;
+}
+
 function rOnboarding(){
   return`<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 28px;text-align:center">
     <svg width="88" height="88" viewBox="0 0 80 80" style="margin-bottom:28px">
@@ -999,7 +1067,7 @@ function rOnboarding(){
       <span>${ico('leaf',17)}</span>I'm ready
     </button>
     <div style="font-size:11px;color:var(--soft);margin-top:20px;line-height:1.7;max-width:260px">
-      Numbers are hidden by default.<br>You can turn them on any time — or never.
+      Numbers are hidden by default.<br>You can unlock them later with your safe word, after a 2-hour wait — or never.
     </div>
   </div>`;
 }
@@ -1125,7 +1193,7 @@ function rAdd(){
   /* ── INGREDIENTS LIST ── */
   const iList=ings.length===0
     ?`<div class="empty" style="padding:14px 0"><div style="color:var(--green);display:flex;justify-content:center;margin-bottom:6px">${ico('leaf',28)}</div><div class="et" style="font-size:13px">No ingredients yet</div></div>`
-    :ings.map(i=>`<div class="ir"><span style="color:${mt.c}">${ico(i.food.i||'leaf',16)}</span><span class="ir-name">${i.food.name.split(' · ')[0]}</span><span class="ir-amt">${i.da}${i.du}</span><button class="ir-del" onclick="removeIng(${i.id})">✕</button></div>`).join('');
+    :ings.map(i=>`<div class="ir"><span style="color:${mt.c}">${ico(i.food.i||'leaf',16)}</span><span class="ir-name">${i.food.name.split(' · ')[0]}</span><span class="ir-amt">${i.rough?i.da:(showNums?`${i.da}${i.du}`:'')}</span><button class="ir-del" onclick="removeIng(${i.id})">✕</button></div>`).join('');
 
   /* ── VARIETY HINT ── */
   let varietyHint='';
@@ -1282,7 +1350,7 @@ function rAmtModal(){
 function rCreateModal(){
   const c=ST.cr;
   const nf=(id,lbl,ph,val,field)=>`<div class="ig"><label class="lbl">${lbl}</label><input class="inp" id="${id}" type="number" min="0" step="0.1" placeholder="${ph}" value="${val}" style="text-align:right" oninput="ST.cr.${field}=this.value"></div>`;
-  return`<div class="moverlay" onclick="if(event.target===this)closeModal()"><div class="msheet"><div class="mhandle"></div><div class="mtitle">Create a custom food</div><div style="font-size:13px;color:var(--soft);margin-bottom:16px;line-height:1.6">Homemade, a family recipe, a local product — add it once and it lives in your list.</div><div class="ig"><label class="lbl">Food name</label><input class="inp" id="cfn" type="text" placeholder="e.g. Grandma's lasagna" value="${c.name}" oninput="ST.cr.name=this.value" autocomplete="off"></div><div class="sec" style="margin-top:4px">Nutrition per 100g / 100ml</div><div class="macro-grid">${nf('cfe','Calories (kcal)','e.g. 210',c.en,'en')}${nf('cfp','Protein (g)','e.g. 12',c.pr,'pr')}${nf('cfc','Carbs (g)','e.g. 24',c.ca,'ca')}${nf('cff','Fat (g)','e.g. 8',c.fa,'fa')}</div><div class="ig"><label class="lbl">Fiber (g) <span style="font-weight:400;color:var(--soft)">optional</span></label><input class="inp" type="number" min="0" step="0.1" placeholder="e.g. 3" value="${c.fi}" style="text-align:right" oninput="ST.cr.fi=this.value"></div>${c.err?`<div class="err-box">${c.err}</div>`:''}<button class="btn btn-g" onclick="saveCustom()" style="margin-bottom:8px"><span>${ico('check',16)}</span>Save to my foods</button><button class="btn btn-o" onclick="backToSearch()"><span>${ico('back',16)}</span>Back to search</button>${CF.length>0?`<hr class="divider"><div class="sec" style="margin-top:0">My saved foods</div>${CF.map(f=>`<div class="cf-row"><span style="color:var(--put)">${ico('leaf',16)}</span><span class="cf-name">${f.name}</span><span style="font-size:11px;color:var(--soft);margin-right:8px">${f.p100.en} kcal</span><button class="cf-del" onclick="delCustom('${f.id}')">${ico('trash',15)}</button></div>`).join('')}`:''}  </div></div>`;
+  return`<div class="moverlay" onclick="if(event.target===this)closeModal()"><div class="msheet"><div class="mhandle"></div><div class="mtitle">Create a custom food</div><div style="font-size:13px;color:var(--soft);margin-bottom:16px;line-height:1.6">Homemade, a family recipe, a local product — add it once and it lives in your list.</div><div class="ig"><label class="lbl">Food name</label><input class="inp" id="cfn" type="text" placeholder="e.g. Grandma's lasagna" value="${c.name}" oninput="ST.cr.name=this.value" autocomplete="off"></div><div class="sec" style="margin-top:4px">Nutrition per 100g / 100ml</div><div class="macro-grid">${nf('cfe','Calories (kcal)','e.g. 210',c.en,'en')}${nf('cfp','Protein (g)','e.g. 12',c.pr,'pr')}${nf('cfc','Carbs (g)','e.g. 24',c.ca,'ca')}${nf('cff','Fat (g)','e.g. 8',c.fa,'fa')}</div><div class="ig"><label class="lbl">Fiber (g) <span style="font-weight:400;color:var(--soft)">optional</span></label><input class="inp" type="number" min="0" step="0.1" placeholder="e.g. 3" value="${c.fi}" style="text-align:right" oninput="ST.cr.fi=this.value"></div>${c.err?`<div class="err-box">${c.err}</div>`:''}<button class="btn btn-g" onclick="saveCustom()" style="margin-bottom:8px"><span>${ico('check',16)}</span>Save to my foods</button><button class="btn btn-o" onclick="backToSearch()"><span>${ico('back',16)}</span>Back to search</button>${CF.length>0?`<hr class="divider"><div class="sec" style="margin-top:0">My saved foods</div>${CF.map(f=>`<div class="cf-row"><span style="color:var(--put)">${ico('leaf',16)}</span><span class="cf-name">${f.name}</span>${showNums?`<span style="font-size:11px;color:var(--soft);margin-right:8px">${f.p100.en} kcal</span>`:''}<button class="cf-del" onclick="delCustom('${f.id}')">${ico('trash',15)}</button></div>`).join('')}`:''}  </div></div>`;
 }
 
 function rScan(){
@@ -1318,29 +1386,22 @@ function rScan(){
 }
 function rSR(r){
   if(r.loading)return`<div class="card" style="margin-top:14px;text-align:center;padding:24px"><span class="spin"></span><span style="font-weight:800"> Looking up…</span></div>`;
+  if(r.noNutrition)return`<div class="card" style="margin-top:14px;text-align:center;padding:24px"><div style="color:var(--soft);margin-bottom:8px">${ico('leaf',32)}</div><div style="font-weight:800">${r.name?r.name.replace(/</g,'&lt;'):'This product'} is in the database, but without nutrition information</div><div style="font-size:12px;color:var(--soft);margin-top:6px;line-height:1.5">You can add it as your own food instead.</div><button class="btn btn-g" style="margin-top:12px" onclick="createFromScan()"><span>${ico('check',16)}</span>Add it as my own food</button><button class="btn btn-o" style="margin-top:8px" onclick="nav('add')"><span>${ico('back',16)}</span>Search manually</button></div>`;
   if(r.error||!r.found)return`<div class="card" style="margin-top:14px;text-align:center;padding:24px"><div style="color:var(--soft);margin-bottom:8px">${ico('leaf',32)}</div><div style="font-weight:800">${r.error?'Could not connect':'Product not found'}</div><button class="btn btn-o" style="margin-top:12px" onclick="nav('add')"><span>${ico('back',16)}</span>Search manually</button></div>`;
   const f=r.food;const numBlock=showNums?`<div class="mpills"><div class="mp" style="background:#0C2140"><div class="mv" style="color:#85B7EB">${f.p100.pr}g</div><div class="mk">protein</div></div><div class="mp" style="background:#251800"><div class="mv" style="color:#EF9F27">${f.p100.ca}g</div><div class="mk">carbs</div></div><div class="mp" style="background:#2A1208"><div class="mv" style="color:#F0997B">${f.p100.fa}g</div><div class="mk">fat</div></div><div class="mp" style="background:#1B2E1F"><div class="mv" style="color:#97C459">${f.p100.fi}g</div><div class="mk">fiber</div></div></div>`:'';
   return`<div class="card" style="margin-top:14px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><span style="color:var(--green)">${ico('leaf',30)}</span><div><div style="font-weight:800;font-size:15px">${f.name}</div><span class="src-tag tag-off">Open Food Facts</span></div></div>${numBlock}<button class="btn btn-g" style="margin-top:10px" onclick="addScanned()"><span>${ico('check',16)}</span>Add to meal</button></div>`;
 }
 
 function rInsights(){
-  return clinicalMode ? rInsightsClinical() : rInsightsClient();
+  return rInsightsClient();
 }
 
 function rInsightsClient(){
-  // Streak — consecutive days with any entry ending today
   const allEntryDates=[...new Set([
     ...ST.moods.map(m=>m.date),
     ...ST.nourished.map(n=>n.date),
     ...ST.meals.map(m=>m.date),
-  ])].sort((a,b)=>b.localeCompare(a));
-  let streak=0;
-  for(let i=0;i<60;i++){
-    const d=new Date();d.setDate(d.getDate()-i);
-    const ds=d.toISOString().split('T')[0];
-    if(allEntryDates.includes(ds))streak++;
-    else break;
-  }
+  ])];
 
   // Last 14 days logged
   const days14=[];
@@ -1349,7 +1410,6 @@ function rInsightsClient(){
     const ds=d.toISOString().split('T')[0];
     days14.push(ds);
   }
-  const daysLogged=days14.filter(ds=>allEntryDates.includes(ds)).length;
   const moodEntries=ST.moods.filter(m=>days14.includes(m.date));
   const topMoodV=Object.entries(moodEntries.reduce((a,m)=>{a[m.value]=(a[m.value]||0)+1;return a},{})).sort((a,b)=>b[1]-a[1])[0]?.[0];
   const topMood=topMoodV?MOODS.find(m=>m.v==topMoodV):null;
@@ -1365,12 +1425,6 @@ function rInsightsClient(){
     </div>`;
   }).join('');
 
-  const streakMsg=streak===0?`You haven't logged today yet — no pressure.`
-    :streak===1?`You showed up today. That's what matters.`
-    :streak<7?`${streak} days in a row. You're building something.`
-    :streak<14?`${streak} days. That's a real pattern. Well done.`
-    :`${streak} days. You've made this yours.`;
-
   return`<div class="screen">
     <div style="font-size:24px;font-weight:900;margin-bottom:4px;letter-spacing:-.3px;display:flex;align-items:center;gap:10px">
       <span style="color:var(--put)">${ico('star',26)}</span>How you're doing
@@ -1378,9 +1432,7 @@ function rInsightsClient(){
     <div style="font-size:13px;color:var(--soft);margin-bottom:20px">A gentle look at the last two weeks</div>
 
     <div class="card" style="margin-bottom:12px;text-align:center;padding:20px 16px">
-      <div style="font-size:48px;font-weight:900;background:linear-gradient(135deg,#4DD871,#FFD166);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1">${streak}</div>
-      <div style="font-size:13px;font-weight:800;color:var(--mid);margin-top:4px;margin-bottom:12px">day${streak!==1?'s':''} in a row</div>
-      <div style="font-size:13px;font-weight:700;color:var(--soft);line-height:1.6;max-width:260px;margin:0 auto">${streakMsg}</div>
+      <div style="font-size:14px;font-weight:700;color:var(--mid);line-height:1.6;max-width:280px;margin:0 auto">However these days have been, you are welcome here. Gaps are part of it.</div>
     </div>
 
     <div class="card" style="margin-bottom:12px">
@@ -1394,18 +1446,8 @@ function rInsightsClient(){
     </div>
 
     <div class="card" style="margin-bottom:12px">
-      <div style="font-weight:900;font-size:14px;margin-bottom:14px">Your fortnight at a glance</div>
+      <div style="font-weight:900;font-size:14px;margin-bottom:14px">The mood you felt most</div>
       <div style="display:flex;gap:9px">
-        <div style="flex:1;background:var(--bg);border-radius:12px;padding:12px 8px;border:1px solid var(--border);text-align:center">
-          <div style="font-size:26px;font-weight:900;color:var(--green)">${daysLogged}</div>
-          <div style="font-size:10px;font-weight:800;color:var(--soft);margin-top:2px">days showed up</div>
-          <div style="font-size:9px;color:var(--soft)">of 14</div>
-        </div>
-        <div style="flex:1;background:var(--bg);border-radius:12px;padding:12px 8px;border:1px solid var(--border);text-align:center">
-          <div style="font-size:26px;font-weight:900;color:var(--green)">${moodEntries.length}</div>
-          <div style="font-size:10px;font-weight:800;color:var(--soft);margin-top:2px">mood check-ins</div>
-          <div style="font-size:9px;color:var(--soft)">of 14</div>
-        </div>
         <div style="flex:1;background:var(--bg);border-radius:12px;padding:12px 8px;border:1px solid var(--border);text-align:center">
           ${topMood
             ?`<div style="color:${topMood.c};display:flex;justify-content:center;margin-bottom:3px">${ico(topMood.k,22)}</div><div style="font-size:11px;font-weight:800;color:${topMood.c}">${topMood.l}</div><div style="font-size:9px;color:var(--soft)">most felt</div>`
@@ -1414,138 +1456,6 @@ function rInsightsClient(){
       </div>
     </div>
 
-  </div>`;
-}
-
-function rInsightsClinical(){
-  // Build 14-day dataset, newest on the right
-  const days14=[];
-  for(let i=13;i>=0;i--){
-    const d=new Date();d.setDate(d.getDate()-i);
-    const ds=d.toISOString().split('T')[0];
-    const mood=ST.moods.filter(m=>m.date===ds).slice(-1)[0];
-    const nour=ST.nourished.filter(n=>n.date===ds).slice(-1)[0];
-    const dayMeals=ST.meals.filter(m=>m.date===ds);
-    const shortDay=d.toLocaleDateString('en-GB',{weekday:'short'}).slice(0,1);
-    const dayNum=d.getDate();
-    days14.push({ds,shortDay,dayNum,mood,nour,dayMeals,isToday:i===0});
-  }
-
-  // Consistency stats
-  const daysWithAny=days14.filter(d=>d.mood||d.nour||d.dayMeals.length>0).length;
-  const daysWithMood=days14.filter(d=>d.mood).length;
-  const daysWithNour=days14.filter(d=>d.nour).length;
-
-  // Mood + nourishment correlation
-  const paired=days14.filter(d=>d.mood&&d.nour);
-  let corr='';
-  if(paired.length>=3){
-    const avgMood=paired.reduce((a,d)=>a+d.mood.value,0)/paired.length;
-    const avgNour=paired.reduce((a,d)=>a+d.nour.value,0)/paired.length;
-    const bothHigh=paired.filter(d=>d.mood.value>=4&&d.nour.value>=4).length;
-    const bothLow=paired.filter(d=>d.mood.value<=2&&d.nour.value<=2).length;
-    if(bothHigh>paired.length*0.4)corr='On your better days, nourishment tends to follow. 🌿';
-    else if(bothLow>paired.length*0.4)corr='Harder days often come with feeling less nourished. That\'s okay — you\'re noticing it.';
-    else if(Math.abs(avgMood-avgNour)<0.8)corr='Your mood and nourishment are moving in a similar direction.';
-    else corr='Your mood and nourishment each have their own rhythm this fortnight.';
-  }
-
-  // 14-day paired chart
-  const chartBars=days14.map(d=>{
-    const moodData=d.mood?MOODS.find(m=>m.v===d.mood.value):null;
-    const nourData=d.nour?NOURISHED.find(n=>n.v===d.nour.value):null;
-    const mH=moodData?(moodData.v/5*100):0;
-    const nH=nourData?(nourData.v/5*100):0;
-    const isToday=d.isToday;
-    return`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0">
-      <div style="width:100%;display:flex;flex-direction:column;justify-content:flex-end;height:70px;gap:2px">
-        <div style="width:100%;height:${mH}%;background:${moodData?moodData.c:'var(--border)'};border-radius:4px 4px 0 0;opacity:${moodData?0.9:0.3};min-height:${moodData?3:0}px;transition:height .3s" title="${moodData?'Mood: '+moodData.l:'No mood'}"></div>
-      </div>
-      <div style="width:100%;height:70px;display:flex;flex-direction:column;justify-content:flex-start;gap:2px">
-        <div style="width:100%;height:${nH}%;background:${nourData?nourData.c:'var(--border)'};border-radius:0 0 4px 4px;opacity:${nourData?0.85:0.3};min-height:${nourData?3:0}px;transition:height .3s" title="${nourData?'Nourished: '+nourData.l:'No entry'}"></div>
-      </div>
-      <div style="font-size:8px;font-weight:800;color:${isToday?'var(--text)':'var(--soft)'};margin-top:2px">${d.dayNum}</div>
-    </div>`;
-  }).join('');
-
-  const chartLegend=`<div style="display:flex;gap:14px;margin-top:10px;justify-content:center">
-    <div style="display:flex;align-items:center;gap:5px"><div style="width:10px;height:10px;border-radius:2px;background:var(--green)"></div><span style="font-size:11px;font-weight:700;color:var(--soft)">Mood</span></div>
-    <div style="display:flex;align-items:center;gap:5px"><div style="width:10px;height:10px;border-radius:2px;background:#FFD166"></div><span style="font-size:11px;font-weight:700;color:var(--soft)">Nourished</span></div>
-    <div style="display:flex;align-items:center;gap:5px"><div style="width:10px;height:3px;border-radius:2px;background:var(--border);margin:auto"></div><span style="font-size:11px;font-weight:700;color:var(--soft)">No entry</span></div>
-  </div>`;
-
-  const chartCard=`<div class="card" style="margin-bottom:12px">
-    <div style="font-weight:900;font-size:14px;margin-bottom:3px">Mood & nourishment</div>
-    <div style="font-size:11px;color:var(--soft);margin-bottom:14px">Last 14 days — bars above the line are mood, below are nourishment</div>
-    <div style="position:relative">
-      <div style="border-top:1px dashed var(--border);position:absolute;top:50%;left:0;right:0;transform:translateY(-50%);pointer-events:none"></div>
-      <div style="display:flex;gap:3px;align-items:stretch">${chartBars}</div>
-    </div>
-    ${chartLegend}
-    ${corr?`<div style="margin-top:12px;padding:10px 13px;background:var(--bg);border-radius:11px;border:1px solid var(--border);font-size:12px;font-weight:700;color:var(--mid);line-height:1.6">${corr}</div>`:''}
-  </div>`;
-
-  // Consistency card
-  const consistencyCard=`<div class="card" style="margin-bottom:12px">
-    <div style="font-weight:900;font-size:14px;margin-bottom:3px">Showing up</div>
-    <div style="font-size:11px;color:var(--soft);margin-bottom:14px">Not about being perfect — just about being here</div>
-    <div style="display:flex;gap:9px">
-      <div style="flex:1;background:var(--bg);border-radius:12px;padding:12px 8px;border:1px solid var(--border);text-align:center">
-        <div style="font-size:26px;font-weight:900;background:linear-gradient(135deg,#4DD871,#FFD166);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${daysWithAny}</div>
-        <div style="font-size:10px;font-weight:800;color:var(--soft);margin-top:2px">days logged</div>
-        <div style="font-size:9px;color:var(--soft);margin-top:1px">of 14</div>
-      </div>
-      <div style="flex:1;background:var(--bg);border-radius:12px;padding:12px 8px;border:1px solid var(--border);text-align:center">
-        <div style="font-size:26px;font-weight:900;color:var(--green)">${daysWithMood}</div>
-        <div style="font-size:10px;font-weight:800;color:var(--soft);margin-top:2px">mood check-ins</div>
-        <div style="font-size:9px;color:var(--soft);margin-top:1px">of 14</div>
-      </div>
-      <div style="flex:1;background:var(--bg);border-radius:12px;padding:12px 8px;border:1px solid var(--border);text-align:center">
-        <div style="font-size:26px;font-weight:900;color:#FFD166">${daysWithNour}</div>
-        <div style="font-size:10px;font-weight:800;color:var(--soft);margin-top:2px">nourishment logs</div>
-        <div style="font-size:9px;color:var(--soft);margin-top:1px">of 14</div>
-      </div>
-    </div>
-  </div>`;
-
-  // Variety card — last 14 days
-  const allMeals14=days14.flatMap(d=>d.dayMeals);
-  const variety14=getVariety(allMeals14.map(m=>({ings:m.ings})));
-  const presentGroups=VGROUPS.filter(g=>variety14[g.k]);
-  const missingGroups=VGROUPS.filter(g=>!variety14[g.k]);
-
-  const varietyCard=`<div class="card" style="margin-bottom:12px">
-    <div style="font-weight:900;font-size:14px;margin-bottom:3px">Food variety</div>
-    <div style="font-size:11px;color:var(--soft);margin-bottom:14px">What's shown up in your meals over the last two weeks</div>
-    ${allMeals14.length===0
-      ?`<div class="empty" style="padding:16px 0"><div class="et" style="font-size:13px">No meals logged yet</div></div>`
-      :`<div style="margin-bottom:10px">
-        <div style="font-size:11px;font-weight:800;color:var(--mid);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Present</div>
-        <div class="variety-row" style="margin-top:0;gap:8px">
-          ${presentGroups.length?presentGroups.map(g=>`<div style="display:flex;align-items:center;gap:6px;background:${g.col}18;border:1px solid ${g.col}40;border-radius:100px;padding:5px 11px 5px 8px"><div class="vdot-circle" style="background:${g.col};width:9px;height:9px"></div><span style="font-size:12px;font-weight:800;color:${g.col}">${g.label}</span></div>`).join(''):'<span style="font-size:12px;color:var(--soft)">None yet</span>'}
-        </div>
-      </div>
-      ${missingGroups.length?`<div>
-        <div style="font-size:11px;font-weight:800;color:var(--soft);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Not yet seen</div>
-        <div class="variety-row" style="margin-top:0;gap:8px">
-          ${missingGroups.map(g=>`<div style="display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:100px;padding:5px 11px 5px 8px"><div class="vdot-circle" style="background:var(--border);width:9px;height:9px"></div><span style="font-size:12px;font-weight:700;color:var(--soft)">${g.label}</span></div>`).join('')}
-        </div>
-      </div>`:''}`
-    }
-  </div>`;
-
-  return`<div class="screen">
-    <div style="font-size:24px;font-weight:900;margin-bottom:4px;letter-spacing:-.3px;display:flex;align-items:center;gap:10px">
-      <span style="color:var(--put)">${ico('star',26)}</span>Insights
-    </div>
-    <div style="font-size:13px;color:var(--soft);margin-bottom:16px">A gentle picture of the last two weeks</div>
-    <div style="display:inline-flex;align-items:center;gap:6px;background:#1A2A1A;border:1px solid #4DD87140;border-radius:100px;padding:5px 12px;margin-bottom:16px">
-      <div style="width:7px;height:7px;border-radius:50%;background:var(--green)"></div>
-      <span style="font-size:11px;font-weight:800;color:var(--green)">Clinical view</span>
-    </div>
-    ${chartCard}
-    ${consistencyCard}
-    ${varietyCard}
   </div>`;
 }
 
@@ -1602,8 +1512,6 @@ function rJournal(){
   const topMoodV=Object.entries(moodCounts).sort((a,b)=>b[1]-a[1])[0]?.[0];
   const topMood=topMoodV?MOODS.find(m=>m.v==topMoodV):null;
   const nourVals=ST.nourished.filter(n=>{const diff=(Date.now()-new Date(n.date+'T12:00:00').getTime())/864e5;return diff<7;}).map(n=>n.value);
-  const avgNour=nourVals.length?Math.round(nourVals.reduce((a,b)=>a+b,0)/nourVals.length):null;
-  const avgNourData=avgNour?NOURISHED.find(n=>n.v===avgNour):null;
 
   const summaryCard=`<div class="card" style="margin-bottom:14px">
     <div style="font-size:11px;font-weight:800;color:var(--soft);text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px">This week</div>
@@ -1611,18 +1519,10 @@ function rJournal(){
     <div style="border-top:1px solid var(--border);margin:12px 0"></div>
     <div style="display:flex;gap:10px">
       <div style="flex:1;background:var(--bg);border-radius:11px;padding:10px;border:1px solid var(--border);text-align:center">
-        <div style="font-size:11px;font-weight:800;color:var(--soft);margin-bottom:5px">Days logged</div>
-        <div style="font-size:22px;font-weight:900;color:var(--text)">${last7.length}</div>
-      </div>
-      <div style="flex:1;background:var(--bg);border-radius:11px;padding:10px;border:1px solid var(--border);text-align:center">
         <div style="font-size:11px;font-weight:800;color:var(--soft);margin-bottom:5px">Common mood</div>
         ${topMood?`<div style="color:${topMood.c};display:flex;justify-content:center">${ico(topMood.k,22)}</div><div style="font-size:10px;font-weight:800;color:${topMood.c};margin-top:2px">${topMood.l}</div>`:`<div style="font-size:11px;color:var(--soft);margin-top:4px">—</div>`}
       </div>
-      <div style="flex:1;background:var(--bg);border-radius:11px;padding:10px;border:1px solid var(--border);text-align:center">
-        <div style="font-size:11px;font-weight:800;color:var(--soft);margin-bottom:4px">Avg nourished</div>
-        ${avgNourData?`<div style="display:flex;justify-content:center">${broccoliSvg(avgNourData.v,avgNourData.c,22)}</div><div style="font-size:10px;font-weight:800;color:${avgNourData.c};margin-top:2px">${avgNourData.l}</div>`:`<div style="font-size:11px;color:var(--soft);margin-top:4px">—</div>`}
       </div>
-    </div>
   </div>`;
 
   /* ── Filter chips ── */
@@ -1679,8 +1579,38 @@ function rJournal(){
   </div>`;
 }
 
+function lockTimeText(ms){
+  const d=new Date(ms),now=new Date();
+  const t=d.toLocaleTimeString('nl-NL',{hour:'2-digit',minute:'2-digit'});
+  return d.toDateString()===now.toDateString()?t:`tomorrow at ${t}`;
+}
+function rNumbersControl(){
+  const note=t=>`<div style="font-size:13px;color:var(--mid);line-height:1.6;margin-top:10px">${t}</div>`;
+  const btn=(label,fn,cls='btn-o')=>`<button class="btn ${cls}" style="margin-top:10px" ${lockUi.busy?'disabled':''} onclick="${fn}">${label}</button>`;
+  const err=lockUi.err?`<div class="err-box" style="margin-top:10px">${lockUi.err}</div>`:'';
+  if(!LOCK.loaded)return note('The lock could not be checked right now, so numbers stay hidden.')+btn('Try again',"loadLock().then(()=>render())");
+  if(LOCK.on)return note('Numbers are on.')+btn('Turn numbers off','turnNumbersOff()')+err;
+  const rr=resetRemainingMs();
+  if(rr!==null){
+    if(rr<=0)return note('The waiting time is over. Choose a new safe word.')
+      +`<input class="inp" type="password" autocomplete="off" style="margin-top:10px" value="${lockUi.word.replace(/"/g,'&quot;')}" oninput="lockUi.word=this.value" placeholder="New safe word">`
+      +`<input class="inp" type="password" autocomplete="off" style="margin-top:8px" value="${lockUi.word2.replace(/"/g,'&quot;')}" oninput="lockUi.word2=this.value" placeholder="Once more">`
+      +btn('Save new safe word','finishReset()','btn-g')+btn('Keep my old one','cancelReset()')+err;
+    return note(`You can choose a new safe word from ${lockTimeText(LOCK.resetAt)}. Numbers stay off until then.`)+btn('I remembered it, cancel','cancelReset()')+err;
+  }
+  const forgot=`<button style="background:none;border:none;color:var(--soft);font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;text-decoration:underline;cursor:pointer;margin-top:12px;padding:0" ${lockUi.busy?'disabled':''} onclick="startReset()">I forgot my safe word</button>`;
+  const rem=lockRemainingMs();
+  if(rem!==null){
+    if(rem<=0)return note('Your 2 hours have passed. You can turn numbers on now, or leave them off.')+btn('Turn numbers on','confirmNumbersOn()','btn-g')+btn('Leave them off','cancelUnlock()')+err;
+    return note(`Numbers can be turned on from ${lockTimeText(LOCK.unlockAt)}. Nothing to do until then.`)+btn('Cancel','cancelUnlock()')+err;
+  }
+  if(lockUi.open)return note('Enter your safe word to start the 2-hour wait.')
+    +`<input class="inp" type="password" autocomplete="off" style="margin-top:10px" value="${lockUi.word.replace(/"/g,'&quot;')}" oninput="lockUi.word=this.value" placeholder="Safe word">`
+    +btn('Start the 2-hour wait','requestUnlock()','btn-g')+btn('Cancel',"lockUi.open=false;lockUi.word='';lockUi.err='';render()")+forgot+err;
+  return note('Numbers are off.')+btn('Turn numbers on…','lockUi.open=true;render()')+err;
+}
+
 function rSettings(){
-  const clinicalUrl=window.location.href.split('?')[0]+'?view=clinical';
   const row=(label,sub,control)=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--border)">
     <div><div style="font-size:14px;font-weight:700;color:var(--text)">${label}</div>${sub?`<div style="font-size:11px;color:var(--soft);margin-top:2px">${sub}</div>`:''}</div>
     ${control}
@@ -1698,17 +1628,9 @@ function rSettings(){
 
     <div class="card" style="margin-bottom:12px;padding:0 16px">
       <div style="font-size:11px;font-weight:800;color:var(--soft);text-transform:uppercase;letter-spacing:.1em;padding:14px 0 8px">Display</div>
-      ${row('Show numbers','Calories, grams and macros across the app',toggle(showNums,'toggleNums()'))}
+      <div style="padding:13px 0"><div style="font-size:14px;font-weight:700;color:var(--text)">Numbers</div><div style="font-size:11px;color:var(--soft);margin-top:2px">Calories, grams and macros across the app</div>${rNumbersControl()}</div>
     </div>
 
-    <div class="card" style="margin-bottom:12px;padding:0 16px">
-      <div style="font-size:11px;font-weight:800;color:var(--soft);text-transform:uppercase;letter-spacing:.1em;padding:14px 0 8px">For clinicians</div>
-      <div style="padding:13px 0;border-bottom:1px solid var(--border)">
-        <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">Clinical view link</div>
-        <div style="font-size:11px;color:var(--soft);margin-bottom:10px;line-height:1.5">Share this URL with your dietician or therapist. It gives access to the full insights view.</div>
-        <div style="background:var(--bg);border-radius:10px;padding:10px 12px;border:1px solid var(--border);font-size:11px;font-weight:700;color:var(--mid);word-break:break-all;line-height:1.5">${clinicalUrl}</div>
-        <button class="btn btn-o" style="margin-top:10px" onclick="navigator.clipboard&&navigator.clipboard.writeText('${clinicalUrl}').then(()=>{const b=event.target.closest('button');b.textContent='Copied!';setTimeout(()=>{b.innerHTML='Copy link'},1800)})">Copy link</button>
-      </div>
     <div class="card" style="margin-bottom:12px;padding:0 16px">
       <div style="font-size:11px;font-weight:800;color:var(--soft);text-transform:uppercase;letter-spacing:.1em;padding:14px 0 8px">Account</div>
       <div style="padding:13px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
@@ -1724,15 +1646,6 @@ function rSettings(){
         <button class="btn" style="background:rgba(255,107,107,.1);border:1px solid rgba(255,107,107,.2);color:#FF6B6B;width:100%" onclick="logout()">
           Sign out
         </button>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:12px;padding:0 16px">
-      <div style="font-size:11px;font-weight:800;color:var(--soft);text-transform:uppercase;letter-spacing:.1em;padding:14px 0 8px">Developer</div>
-      <div style="padding:13px 0;border-bottom:1px solid var(--border)">
-        <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">Reset onboarding</div>
-        <div style="font-size:11px;color:var(--soft);margin-bottom:10px">Show the welcome screen again on next open.</div>
-        <button class="btn btn-o" onclick="localStorage.removeItem('n_onboarded');onboarded=false;render()">Show welcome screen</button>
       </div>
     </div>
 
@@ -1766,6 +1679,7 @@ function render(){
     n.innerHTML='';return;
   }
   if(!authUser){app.innerHTML=authScreen==='register'?rRegister():rLogin();n.innerHTML='';return;}
+  if(LOCK.loaded&&!LOCK.has){app.innerHTML=rSafeWord();n.innerHTML='';return;}
   if(!onboarded){app.innerHTML=rOnboarding();n.innerHTML='';return;}
   switch(ST.scr){
     case'home':app.innerHTML=rHome();break;
@@ -1780,7 +1694,7 @@ function render(){
     <button class="nb ${ST.scr==='journal'?'on':''}" onclick="nav('journal')" style="color:${ST.scr==='journal'?'#FFD166':'var(--soft)'}">${ico('journal',22)}Journal</button>
     <button class="fab" onclick="nav('add')" aria-label="Add meal"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5V19M5 12H19"/></svg></button>
     <button class="nb ${ST.scr==='insights'?'on':''}" onclick="nav('insights')" style="color:${ST.scr==='insights'?'var(--put)':'var(--soft)'}">${ico('star',22)}Insights</button>
-    <button class="nb ${ST.scr==='settings'?'on':''}" onclick="nav('settings')" style="color:${ST.scr==='settings'?'var(--soft)':'var(--soft)'}">${ico('settings',22)}Settings</button>
+    <button class="nb ${ST.scr==='settings'?'on':''}" onclick="nav('settings')" style="color:${ST.scr==='settings'?'var(--coral)':'var(--soft)'}">${ico('settings',22)}Settings</button>
   `;
 }
 // ── Bootstrap: check for existing Supabase session ──
@@ -1796,6 +1710,6 @@ function render(){
 
 // Keep in sync across tabs
 supa.auth.onAuthStateChange(async(event,session)=>{
-  if(event==='SIGNED_OUT'){authUser=null;ST.meals=[];ST.moods=[];ST.nourished=[];CF=[];RCP=[];appLoading=false;render();}
+  if(event==='SIGNED_OUT'){authUser=null;showNums=false;LOCK.loaded=false;ST.meals=[];ST.moods=[];ST.nourished=[];CF=[];RCP=[];appLoading=false;render();}
 });
 </script></body></html>
