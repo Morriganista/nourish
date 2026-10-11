@@ -751,10 +751,13 @@ function rResults(rs){
 /* ── SCANNER ── */
 function nav(s){if(ST.scr==='scan')stopScan();ST.scr=s;render();}
 let _scanner=null;
+let _stopping=Promise.resolve();
 
 async function startScan(){
   if(_scanner)return;
   const el=$('qr-reader');if(!el)return;
+  await _stopping; // the previous camera session must be fully released first
+  if(_scanner||!$('qr-reader')||ST.scr!=='scan'||ST.scan.result)return;
   try{
     _scanner=new Html5Qrcode('qr-reader');
     await _scanner.start(
@@ -774,14 +777,17 @@ async function startScan(){
 }
 
 function stopScan(){
-  if(_scanner){
-    _scanner.stop().catch(()=>{});
-    _scanner=null;
-  }
+  const sc=_scanner;_scanner=null;
   ST.scan.active=false;
+  if(sc){_stopping=Promise.resolve().then(()=>sc.stop()).then(()=>{try{sc.clear();}catch(e){}}).catch(()=>{});}
 }
 
+function scanAgain(){ST.scan.result=null;ST.scan.err=null;render();}
+
 async function handleBarcode(code){
+  code=String(code||'').trim();
+  if(!code)return;
+  if(ST.scan.result&&ST.scan.result.loading)return;
   stopScan();
   ST.scan.result={loading:true,code};render();
   try{
@@ -1387,7 +1393,6 @@ function rScan(){
 
     ${!result?`
       <div id="qr-reader" style="width:100%;border-radius:var(--r);overflow:hidden;background:#0D0F13;min-height:260px"></div>
-      <div style="font-size:11px;color:var(--soft);text-align:center;margin-top:8px;margin-bottom:4px">Needs HTTPS — works after deploying to Vercel</div>
     `:''}
 
     ${err?`<div style="color:#E05050;text-align:center;padding:10px 0;font-weight:700;font-size:13px">${err}</div>`:''}
@@ -1395,12 +1400,14 @@ function rScan(){
     <div style="margin-top:14px">
       <div class="sec" style="margin-top:0">Or enter barcode manually</div>
       <div style="display:flex;gap:8px">
-        <input class="inp" id="mbc" placeholder="e.g. 8718452099631" style="flex:1">
-        <button class="btn btn-g" style="flex:0 0 auto" onclick="handleBarcode($('mbc').value)">${ico('check',16)}</button>
+        <input class="inp" id="mbc" inputmode="numeric" placeholder="e.g. 8718452099631" style="flex:1;min-width:0" onkeydown="if(event.key==='Enter')handleBarcode($('mbc').value)">
+        <button class="btn btn-g" style="flex:0 0 56px;width:56px;padding:13px 0" aria-label="Look up" onclick="handleBarcode($('mbc').value)">${ico('check',16)}</button>
       </div>
     </div>
 
     ${result?rSR(result):''}
+
+    ${result&&!result.loading?`<div style="margin-top:14px"><button class="btn btn-o" onclick="scanAgain()"><span>${ico('cam',16)}</span>Scan another product</button></div>`:''}
 
     <div style="margin-top:14px">
       <button class="btn btn-o" onclick="nav('add')"><span>${ico('back',16)}</span>Back to meal</button>
