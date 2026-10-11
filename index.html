@@ -458,37 +458,50 @@ const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 const supa=supabase.createClient(SUPA_URL,SUPA_KEY);
 
 // ── Auth state ──
-let authUser=null;   // {id, name, username}
+let authUser=null;   // {id, name, email}
+let authNote=null;
+let authDraft={name:'',email:''}; // keeps typed name/email when an error re-draws the form
+const esc=v=>String(v||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 let authScreen='login';
 let authErr=null;
 let appLoading=true; // show spinner while checking session
 
-async function login(username,password){
-  authErr=null;
-  const email=username.trim().toLowerCase()+'@nourish.app';
+const EMAIL_RE=/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+async function login(email,password){
+  authErr=null;authNote=null;
+  email=(email||'').trim().toLowerCase();authDraft.email=email;
+  if(!email||!password){authErr='Please fill in your email and password.';render();return;}
   const{data,error}=await supa.auth.signInWithPassword({email,password});
-  if(error){authErr='Incorrect username or password.';render();return;}
+  if(error){
+    authErr=(error.message||'').toLowerCase().includes('not confirmed')?'Please confirm your email first. Check your inbox for the link.':'Incorrect email or password.';
+    render();return;
+  }
   await afterSignIn(data.user);
 }
 
-async function register(name,username,password){
-  authErr=null;
-  if(!name.trim()||!username.trim()||!password){authErr='Please fill in all fields.';render();return;}
+async function register(name,email,password){
+  authErr=null;authNote=null;
+  email=(email||'').trim().toLowerCase();authDraft.name=name;authDraft.email=email;
+  if(!name.trim()||!email||!password){authErr='Please fill in all fields.';render();return;}
+  if(!EMAIL_RE.test(email)){authErr='Please enter a valid email address.';render();return;}
   if(password.length<4){authErr='Password must be at least 4 characters.';render();return;}
-  // Check username not taken
-  const{data:existing}=await supa.from('profiles').select('id').eq('username',username.trim().toLowerCase()).single();
-  if(existing){authErr='That username is already taken.';render();return;}
-  const email=username.trim().toLowerCase()+'@nourish.app';
-  const{data,error}=await supa.auth.signUp({email,password});
-  if(error){authErr=error.message;render();return;}
-  // Create profile row
-  await supa.from('profiles').insert({id:data.user.id,name:name.trim(),username:username.trim().toLowerCase()});
-  await afterSignIn(data.user);
+  const{data,error}=await supa.auth.signUp({email,password,options:{data:{name:name.trim()}}});
+  if(error){
+    authErr=(error.message||'').toLowerCase().includes('already')?'There is already an account with this email. Try signing in.':error.message;
+    render();return;
+  }
+  if(data.session){await afterSignIn(data.user);return;}
+  // Email confirmation is switched on: no session until the link is opened.
+  authScreen='login';authNote=`We sent a link to ${email}. Open it to confirm, then sign in here.`;render();
 }
 
 async function afterSignIn(user){
-  const{data:profile}=await supa.from('profiles').select('*').eq('id',user.id).single();
-  authUser={id:user.id,name:profile?.name||'',username:profile?.username||''};
+  let{data:profile}=await supa.from('profiles').select('*').eq('id',user.id).single();
+  if(!profile){
+    const row={id:user.id,name:(user.user_metadata&&user.user_metadata.name)||'',username:(user.email||'').toLowerCase()};
+    await supa.from('profiles').insert(row);profile=row;
+  }
+  authUser={id:user.id,name:profile?.name||'',email:(user.email||'').toLowerCase()};authDraft={name:'',email:''};
   await loadLock();
   await loadUserData();
   render();
@@ -496,7 +509,7 @@ async function afterSignIn(user){
 
 async function logout(){
   await supa.auth.signOut();
-  authUser=null;authScreen='login';authErr=null;
+  authUser=null;authScreen='login';authErr=null;authNote=null;
   ST.meals=[];ST.moods=[];ST.nourished=[];CF=[];RCP=[];
   onboarded=false;
   LOCK={loaded:false,has:false,on:false,unlockAt:null,resetAt:null,serverNow:0,fetchedAt:0};showNums=false;
@@ -948,10 +961,11 @@ function rLogin(){
 
     ${authErr?`<div class="err-box" style="width:100%;max-width:320px;margin-bottom:16px">${authErr}</div>`:''}
 
+    ${authNote?`<div style="width:100%;max-width:320px;margin-bottom:16px;padding:11px 14px;border-radius:12px;border:1px solid var(--border);background:var(--card);font-size:13px;font-weight:700;color:var(--mid);line-height:1.5">${authNote}</div>`:''}
     <div style="width:100%;max-width:320px">
       <div class="ig">
-        <label class="lbl">Username</label>
-        <input class="inp" id="l-user" type="text" placeholder="Your username" autocomplete="username" autocapitalize="none" spellcheck="false">
+        <label class="lbl">Email</label>
+        <input class="inp" id="l-user" type="email" placeholder="Your email address" autocomplete="email" autocapitalize="none" spellcheck="false" value="${esc(authDraft.email)}">
       </div>
       <div class="ig">
         <label class="lbl">Password</label>
@@ -961,13 +975,13 @@ function rLogin(){
       <button class="btn btn-g" style="margin-bottom:12px" onclick="login($('l-user').value,$('l-pass').value)">
         <span>${ico('check',16)}</span>Sign in
       </button>
-      <button class="btn btn-o" onclick="authScreen='register';authErr=null;render()">
+      <button class="btn btn-o" onclick="authScreen='register';authErr=null;authNote=null;render()">
         Create an account
       </button>
     </div>
 
     <div style="font-size:10px;color:var(--soft);margin-top:28px;text-align:center;line-height:1.6;max-width:260px">
-      Your data is stored on this device.<br>A secure backend is coming soon.
+      Your entries are stored in your account,<br>on servers in the EU (Ireland).
     </div>
   </div>`;
 }
@@ -983,11 +997,11 @@ function rRegister(){
     <div style="width:100%;max-width:320px">
       <div class="ig">
         <label class="lbl">Your name</label>
-        <input class="inp" id="r-name" type="text" placeholder="e.g. Morrigan" autocomplete="name">
+        <input class="inp" id="r-name" type="text" placeholder="e.g. Morrigan" autocomplete="name" value="${esc(authDraft.name)}">
       </div>
       <div class="ig">
-        <label class="lbl">Username</label>
-        <input class="inp" id="r-user" type="text" placeholder="Choose a username" autocomplete="username" autocapitalize="none" spellcheck="false">
+        <label class="lbl">Email</label>
+        <input class="inp" id="r-user" type="email" placeholder="Your email address" autocomplete="email" autocapitalize="none" spellcheck="false" value="${esc(authDraft.email)}">
       </div>
       <div class="ig">
         <label class="lbl">Password</label>
@@ -1003,7 +1017,7 @@ function rRegister(){
     </div>
 
     <div style="font-size:10px;color:var(--soft);margin-top:28px;text-align:center;line-height:1.6;max-width:260px">
-      Your data stays on this device for now.<br>A secure backend is coming soon.
+      Your email is only used to sign you in.<br>Your entries are stored in your account, on servers in the EU (Ireland).
     </div>
   </div>`;
 }
@@ -1639,7 +1653,7 @@ function rSettings(){
         </div>
         <div>
           <div style="font-size:15px;font-weight:800;color:var(--text)">${authUser?.name||'—'}</div>
-          <div style="font-size:12px;color:var(--soft)">@${authUser?.username||'—'}</div>
+          <div style="font-size:12px;color:var(--soft)">${authUser?.email||'—'}</div>
         </div>
       </div>
       <div style="padding:13px 0">
